@@ -1,3 +1,5 @@
+import sys
+
 from collections import OrderedDict
 
 from torch.nn import init
@@ -34,8 +36,8 @@ class FeedFwd(Sequential, FeedForwardParametric):
         )
 
 class VGG16(FeedForwardParametric):
-    def __init__(self, in_dim, out_dim, relu=True, beta=20, init_weights=True, batch_norm=False):
-        super().__init__()
+    def __init__(self, in_dim, out_dim, relu=True, beta=20, init_weights=True, batch_norm=False, **kwargs):
+        super().__init__(**kwargs)
         def make_layers(cfg, batch_norm=False):
             layers = OrderedDict()
             in_channels = in_dim

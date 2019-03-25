@@ -15,13 +15,13 @@ import torch
 from PIL import Image
 from tctim import imprint
 from torch.utils.data import DataLoader
-from torchvision.datasets import MNIST, CIFAR10
-from torchvision.transforms import Pad, ToTensor, Compose, Normalize, RandomHorizontalFlip, RandomCrop
+from torchvision.datasets import MNIST, CIFAR10, ImageFolder
+from torchvision.transforms import Pad, ToTensor, Compose, Normalize, RandomHorizontalFlip, RandomCrop, RandomResizedCrop
 from torch import nn
 
 from ntorx.attribution import DTDZPlus, DTDZB, ShapeAttributor, SequentialAttributor, PassthroughAttributor, GradientAttributor
 from ntorx.image import colorize, montage, imgify
-from ntorx.nn import Linear
+from ntorx.nn import Linear, PaSU
 from ntorx.util import config_logger
 
 from .model import FeedFwd, VGG16
@@ -59,21 +59,24 @@ def main(ctx, log, verbose, threads, device):
 
 @main.command()
 @click.option('-l', '--load', type=click.Path())
-@click.option('--compat', type=click.Path())
+@click.option('--compat', type=click.File())
+@click.option('--nout', type=int, default=10)
+@click.option('--cin', type=int, default=3)
 @click.option('--beta', type=float, default=1e2)
 @click.option('--force-relu/--no-force-relu', default=False)
 @click.option('--batchnorm/--no-batchnorm', default=False)
+@click.option('--parallel/--no-parallel', default=False)
 @click.pass_context
-def model(ctx, load, compat, beta, force_relu, batchnorm):
+def model(ctx, load, compat, nout, cin, beta, force_relu, batchnorm, parallel):
     #model = FeedFwd((1, 32, 32), 10, relu=force_relu, beta=beta)
-    model = GradientAttributor.of(VGG16)(3, 10, relu=force_relu, beta=beta, init_weights=load is None, batch_norm=batchnorm)
+    init_weights = (load is None) or (compat is not None)
+    model = GradientAttributor.of(VGG16)(cin, nout, relu=force_relu, beta=beta, init_weights=init_weights, batch_norm=batchnorm, parallel=parallel)
     if load is not None:
         if compat is None:
             model.load_params(load)
         else:
-            obj = torch.load(load)
             trans = json.load(compat)
-            model.load_state_dict({trans[k]: v for k, v in obj.items()})
+            model.load_params(load, trans=trans, strict=False)
 
     model.device(ctx.obj.device)
     ctx.obj.model = model
@@ -82,7 +85,7 @@ def model(ctx, load, compat, beta, force_relu, batchnorm):
 @click.option('-b', '--bsize', type=int, default=32)
 @click.option('--train/--test', default=True)
 @click.option('--datapath', default=path.join(xdg_data_home(), 'dataset'))
-@click.option('--dataset', type=click.Choice(['CIFAR10', 'MNIST']), default='CIFAR10')
+@click.option('--dataset', type=click.Choice(['CIFAR10', 'MNIST', 'Imagenet-12']), default='CIFAR10')
 @click.option('--download/--no-download', default=False)
 @click.option('--shuffle/--no-shuffle', default=True)
 @click.option('--workers', type=int, default=4)
@@ -93,6 +96,11 @@ def data(ctx, bsize, train, datapath, dataset, download, shuffle, workers):
         dset = CIFAR10(root=datapath, train=train , transform=transf, download=download)
     elif dataset == 'MNIST':
         dset = MNIST(root=data, train=train , transform=Compose([Pad(2), ToTensor()]), download=download)
+    elif dataset == 'Imagenet-12':
+        transf = Compose(([RandomResizedCrop(224), RandomHorizontalFlip()] if train else [CenterCrop(224)]) + [ToTensor(), Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
+        dset = ImageFolder(root=datapath, transform=transf)
+        if not train:
+            logger.warning('Imagenet-12 requires a different data path for validation!')
     else:
         raise RuntimeError('No such dataset!')
     loader  = DataLoader(dset, bsize, shuffle=shuffle, num_workers=workers)
@@ -178,6 +186,7 @@ def attribution(ctx, output, backup):
     loader = ctx.obj.loader
     model = ctx.obj.model
     model.to(ctx.obj.device)
+    model.eval()
 
     data, label = next(iter(loader))
     data = data.to(ctx.obj.device)

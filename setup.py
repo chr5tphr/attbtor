@@ -11,6 +11,7 @@ setup(
         'Pillow>=5.3.0',
         'torch>=0.4.1.post2',
         'torchvision>=0.2.1',
+        'Click>=7.0',
     ],
     entry_points={
         'console_scripts': [
