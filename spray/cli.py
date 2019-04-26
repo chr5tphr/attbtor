@@ -87,7 +87,7 @@ def model(ctx, load, compat, nout, cin, beta, force_relu, batchnorm, parallel):
 @click.option('--datapath', default=path.join(xdg_data_home(), 'dataset'))
 @click.option('--dataset', type=click.Choice(['CIFAR10', 'MNIST', 'Imagenet-12']), default='CIFAR10')
 @click.option('--download/--no-download', default=False)
-@click.option('--shuffle/--no-shuffle', default=True)
+@click.option('--shuffle/--no-shuffle', default=False)
 @click.option('--workers', type=int, default=4)
 @click.pass_context
 def data(ctx, bsize, train, datapath, dataset, download, shuffle, workers):
@@ -107,55 +107,6 @@ def data(ctx, bsize, train, datapath, dataset, download, shuffle, workers):
     ctx.obj.loader = loader
 
 @main.command()
-@click.option('--param', type=ChoiceList(['weight', 'bias', 'beta', 'all']), default=['weight', 'bias'])
-@click.option('--lr', type=float, default=1e-3)
-@click.option('--decay', type=float)
-@click.pass_context
-def optimize(ctx, param, lr, decay):
-    model = ctx.obj.model
-
-    optargs = []
-    if 'weight' in param:
-        params = (module.weight for module in model.modules() if isinstance(module, Linear))
-        arg = {'params': params, 'lr': lr}
-        #if decay:
-        #    arg['weight_decay'] = decay
-        optargs.append(arg)
-    if 'bias' in param:
-        params = (module.bias for module in model.modules() if isinstance(module, Linear))
-        arg = {'params': params, 'lr': lr}
-        #if decay:
-        #    arg['weight_decay'] = decay
-        optargs.append(arg)
-    if 'beta' in param:
-        params = (module.beta for module in model.modules() if isinstance(module, PaSU))
-        arg = {'params': params, 'lr': lr}
-        if decay:
-            arg['weight_decay'] = decay
-        optargs.append(arg)
-    if 'all' in param:
-        arg = {'params': model.parameters(), 'lr': lr}
-        #if decay:
-        #    arg['weight_decay'] = decay
-        optargs.append(arg)
-
-    ctx.obj.optimizer = torch.optim.Adam(optargs)
-
-@main.command()
-@click.option('-c', '--checkpoint', type=click.Path())
-@click.option('-s', '--start', type=int, default=0)
-@click.option('-n', '--nepochs', type=int, default=10)
-@click.option('-f', '--sfreq', type=int, default=1)
-@click.option('--nslope', type=int, default=5)
-@click.pass_context
-def train(ctx, checkpoint, start, nepochs, sfreq, nslope):
-    loader = ctx.obj.loader
-    model = ctx.obj.model
-    optimizer = ctx.obj.optimizer
-
-    model.train_params(loader, optimizer, nepochs=nepochs, nslope=nslope, spath=checkpoint, start=start, sfreq=sfreq)
-
-@main.command()
 @click.option('-o', '--output', type=click.File(mode='w'), default=stdout)
 @click.pass_context
 def validate(ctx, output):
@@ -166,28 +117,51 @@ def validate(ctx, output):
     output.write('Accuracy: {:.3f}\n'.format(acc))
 
 @main.command()
-@click.option('-o', '--output', type=click.File(mode='w'), default=stdout)
+@click.option('-o', '--output', type=click.Path())
+@click.option('--layer', type=int, default=0)
 @click.pass_context
-def betastat(ctx, output):
+def attribution(ctx, output):
+    loader = ctx.obj.loader
     model = ctx.obj.model
+    model.to(ctx.obj.device)
+    model.eval()
+    dlen = len(loader)
 
-    params = (module.beta for module in model.modules() if isinstance(module, PaSU))
-    stats = [(param.data.mean().item(), param.data.std().item()) for param in params]
+    for i, (data, label) in enumerate(loader):
+        logger.debug('Processing batch {:d}/{:d} ...'.format(i, dlen))
+        data = data.to(ctx.obj.device)
+        out = model.forward(data)
+        attrib = model[layer:].attribution(out)
+        if not path.exists(output):
+            subshp = tuple(attrib.shape[1:])
+            with h5py.File(output, 'w') as fd:
+                fd.create_dataset('attribution', shape=(0,) + subshp, dtype='f32', maxshape=(None,) + subshp, chunks=True)
+                fd.create_dataset('prediction',  shape=(0,), dtype='u16', maxshape=(None,), chunks=True)
+                fd.create_dataset('label',       shape=(0,), dtype='u16', maxshape=(None,), chunks=True)
 
-    head = '{: ^3} {: ^10} {: ^10}\n'.format('#', 'mean', 'std')
-    info = '\n'.join('{: >3d} {: >10.2e} {: >10.2e}'.format(n, *stat) for n, stat in enumerate(stats)) + '\n'
-    output.write(head + info)
+        with h5py.File(output, 'a') as fd:
+            n = fd['attribution'].shape[0]
+            fd['attribution'].resize(n + attrib.shape[0], axis=0)
+            fd['prediction'].resize(n + attrib.shape[0], axis=0)
+            fd['label'].resize(n + attrib.shape[0], axis=0)
+
+            fd['attribution'][n:] = attrib.cpu().numpy()
+            fd['prediction'][n:] = out.argmax(1).cpu().numpy()
+            fd['label'][n:] = label.cpu().numpy()
 
 @main.command()
 @click.option('-o', '--output', type=click.File(mode='wb'), default=stdout.buffer)
 @click.option('-b', '--backup', type=click.File(mode='wb'))
+@click.option('--cmap', default='hot')
+@click.option('--seed', type=int, default=0xDEADBEEF)
 @click.pass_context
-def attribution(ctx, output, backup):
+def attrvis(ctx, output, backup, cmap, seed):
     loader = ctx.obj.loader
     model = ctx.obj.model
     model.to(ctx.obj.device)
     model.eval()
 
+    torch.manual_seed(seed)
     data, label = next(iter(loader))
     data = data.to(ctx.obj.device)
     #attrib = model.attribution(model(data))
@@ -197,9 +171,9 @@ def attribution(ctx, output, backup):
     carr = np.abs(np.moveaxis(attrib.detach().cpu().numpy(), 1, -1)).sum(-1, keepdims=True)
     carr /= np.abs(carr).sum((1, 2, 3), keepdims=True)
     if output.isatty():
-        imprint(colorize(carr.squeeze(3), cmap='bwr'), montage=True)
+        imprint(colorize(carr.squeeze(3), cmap=cmap), montage=True)
     else:
-        img = colorize(montage(carr).squeeze(2), cmap='wred')
+        img = colorize(montage(carr).squeeze(2), cmap=cmap)
         Image.fromarray(imgify(img)).save(output, format='png')
 
     if backup:

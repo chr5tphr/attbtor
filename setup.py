@@ -2,7 +2,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name = "pasu",
+    name = "spray",
     version = "0.1",
     packages=find_packages(),
     install_requires=[
@@ -15,7 +15,7 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'pasu = pasu.cli:main'
+            'spray = spray.cli:main'
         ]
     }
 )
