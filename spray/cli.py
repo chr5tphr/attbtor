@@ -16,15 +16,15 @@ from PIL import Image
 from tctim import imprint
 from torch.utils.data import DataLoader
 from torchvision.datasets import MNIST, CIFAR10, ImageFolder
-from torchvision.transforms import Pad, ToTensor, Compose, Normalize, RandomHorizontalFlip, RandomCrop, RandomResizedCrop
+from torchvision.transforms import Pad, ToTensor, Compose, Normalize, RandomHorizontalFlip, RandomCrop, RandomResizedCrop, CenterCrop
 from torch import nn
 
-from ntorx.attribution import DTDZPlus, DTDZB, ShapeAttributor, SequentialAttributor, PassthroughAttributor, GradientAttributor
+from ntorx.attribution import DTDZPlus, DTDZB, ShapeAttributor, SequentialAttributor, PassthroughAttributor, GradientAttributor, SmoothGradAttributor
 from ntorx.image import colorize, montage, imgify
 from ntorx.nn import Linear, PaSU
 from ntorx.util import config_logger
 
-from .model import FeedFwd, VGG16
+from .model import FeedFwd, VGG16, preset
 
 
 logger = getLogger()
@@ -60,17 +60,28 @@ def main(ctx, log, verbose, threads, device):
 @main.command()
 @click.option('-l', '--load', type=click.Path())
 @click.option('--compat', type=click.File())
-@click.option('--nout', type=int, default=10)
+@click.option('--nout', type=int, default=1000)
 @click.option('--cin', type=int, default=3)
-@click.option('--beta', type=float, default=1e2)
-@click.option('--force-relu/--no-force-relu', default=False)
-@click.option('--batchnorm/--no-batchnorm', default=False)
+@click.option('--attributor', type=click.Choice(['gradient', 'smoothgrad', 'dtd', 'lrp_a', 'lrp_b']), default='gradient')
 @click.option('--parallel/--no-parallel', default=False)
 @click.pass_context
-def model(ctx, load, compat, nout, cin, beta, force_relu, batchnorm, parallel):
-    #model = FeedFwd((1, 32, 32), 10, relu=force_relu, beta=beta)
+def model(ctx, load, compat, nout, cin, attributor, parallel):
     init_weights = (load is None) or (compat is not None)
-    model = GradientAttributor.of(VGG16)(cin, nout, relu=force_relu, beta=beta, init_weights=init_weights, batch_norm=batchnorm, parallel=parallel)
+    Model = {
+        'gradient': GradientAttributor,
+        'smoothgrad': SmoothGradAttributor,
+        'dtd': SequentialAttributor,
+        'lrp_a': SequentialAttributor,
+        'lrp_b': SequentialAttributor,
+    }[attributor].of(VGG16)
+    layerns = preset[{
+        'gradient': 'None',
+        'smoothgrad': 'None',
+        'dtd': 'DTD',
+        'lrp_a': 'LRPSeqA',
+        'lrp_b': 'LRPSeqB',
+    }[attributor]]
+    model = Model(cin, nout, init_weights=init_weights, parallel=parallel, layerns=layerns)
     if load is not None:
         if compat is None:
             model.load_params(load)
@@ -80,12 +91,13 @@ def model(ctx, load, compat, nout, cin, beta, force_relu, batchnorm, parallel):
 
     model.device(ctx.obj.device)
     ctx.obj.model = model
+    ctx.obj.nout = nout
 
 @main.command()
 @click.option('-b', '--bsize', type=int, default=32)
-@click.option('--train/--test', default=True)
+@click.option('--train/--test', default=False)
 @click.option('--datapath', default=path.join(xdg_data_home(), 'dataset'))
-@click.option('--dataset', type=click.Choice(['CIFAR10', 'MNIST', 'Imagenet-12']), default='CIFAR10')
+@click.option('--dataset', type=click.Choice(['CIFAR10', 'MNIST', 'Imagenet-12']), default='Imagenet-12')
 @click.option('--download/--no-download', default=False)
 @click.option('--shuffle/--no-shuffle', default=False)
 @click.option('--workers', type=int, default=4)
@@ -99,8 +111,6 @@ def data(ctx, bsize, train, datapath, dataset, download, shuffle, workers):
     elif dataset == 'Imagenet-12':
         transf = Compose(([RandomResizedCrop(224), RandomHorizontalFlip()] if train else [CenterCrop(224)]) + [ToTensor(), Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
         dset = ImageFolder(root=datapath, transform=transf)
-        if not train:
-            logger.warning('Imagenet-12 requires a different data path for validation!')
     else:
         raise RuntimeError('No such dataset!')
     loader  = DataLoader(dset, bsize, shuffle=shuffle, num_workers=workers)
@@ -158,22 +168,26 @@ def attribution(ctx, output):
 def attrvis(ctx, output, backup, cmap, seed):
     loader = ctx.obj.loader
     model = ctx.obj.model
+    nout = ctx.obj.nout
     model.to(ctx.obj.device)
     model.eval()
 
     torch.manual_seed(seed)
     data, label = next(iter(loader))
     data = data.to(ctx.obj.device)
-    #attrib = model.attribution(model(data))
-    attrib = model.attribution(inpt=data)
+    out = model(data)
+    amax = out.argmax(1)
+    fout = torch.eye(nout, device=out.device, dtype=out.dtype)[amax]
+    attrib = model.attribution(fout)
 
-    #carr = np.moveaxis(attrib.detach().cpu().numpy(), 1, -1)
-    carr = np.abs(np.moveaxis(attrib.detach().cpu().numpy(), 1, -1)).sum(-1, keepdims=True)
+    #carr = np.abs(np.moveaxis(attrib.detach().cpu().numpy(), 1, -1)).sum(-1, keepdims=True)
+    carr = np.moveaxis(attrib.detach().cpu().numpy(), 1, -1).sum(-1, keepdims=True)
+    bbox = (lambda x: (-x, x))(np.abs(carr).max())
     carr /= np.abs(carr).sum((1, 2, 3), keepdims=True)
     if output.isatty():
-        imprint(colorize(carr.squeeze(3), cmap=cmap), montage=True)
+        imprint(colorize(carr.squeeze(3), cmap=cmap, bbox=bbox), montage=True)
     else:
-        img = colorize(montage(carr).squeeze(2), cmap=cmap)
+        img = colorize(montage(carr).squeeze(2), cmap=cmap, bbox=bbox)
         Image.fromarray(imgify(img)).save(output, format='png')
 
     if backup:

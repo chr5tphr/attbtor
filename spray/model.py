@@ -3,14 +3,14 @@ import sys
 from collections import OrderedDict
 from argparse import Namespace
 
-from torch.nn import init
-from torch.nn import Dropout, MaxPool2d, AdaptiveAvgPool2d
+from torch.nn import init, Dropout, MaxPool2d, AdaptiveAvgPool2d, ReLU
 from torchvision.models.vgg import cfg as vggconfig
-from ntorx.attribution import LRPAlphaBeta, LRPEpsilon, PoolingAttributor,
-                              DTDZPlus, DTDZB, ShapeAttributor, SequentialAttributor,
+from ntorx.attribution import LRPAlphaBeta, LRPEpsilon, PoolingAttributor, \
+                              DTDZPlus, DTDZB, ShapeAttributor, SequentialAttributor, \
                               PassthroughAttributor, GradientAttributor
 from ntorx.model import Parametric, FeedForwardParametric
-from ntorx.nn import BatchView, PaSU, Sequential, Linear
+from ntorx.nn import BatchView, Sequential, Linear
+from torch.nn.functional import avg_pool2d
 try:
     from ntorx.nn import Dense, Conv2d, BatchNorm2d
 except ImportError:
@@ -38,12 +38,14 @@ class FeedFwd(Sequential, FeedForwardParametric):
             ])
         )
 
-presets = {
+preset = {
     'None': Namespace(
         Dense             = Dense,
         kwdense           = {},
         Conv2d            = Conv2d,
         kwconv            = {},
+        IConv2d           = Conv2d,
+        kwiconv           = {},
         ReLU              = ReLU,
         Dropout           = Dropout,
         MaxPool2d         = MaxPool2d,
@@ -56,6 +58,8 @@ presets = {
         kwdense           = {'use_bias': True},
         Conv2d            = DTDZPlus.of(Conv2d),
         kwconv            = {'use_bias': True},
+        IConv2d            = DTDZPlus.of(Conv2d),
+        kwiconv            = {'use_bias': True},
         ReLU              = PassthroughAttributor.of(ReLU),
         Dropout           = PassthroughAttributor.of(Dropout),
         MaxPool2d         = PoolingAttributor.of(MaxPool2d),
@@ -68,6 +72,8 @@ presets = {
         kwdense           = {'use_bias': True},
         Conv2d            = LRPAlphaBeta.of(Conv2d),
         kwconv            = {'use_bias': True, 'alpha': 2, 'beta': 1},
+        IConv2d            = LRPAlphaBeta.of(Conv2d),
+        kwiconv            = {'use_bias': True, 'alpha': 2, 'beta': 1},
         ReLU              = PassthroughAttributor.of(ReLU),
         Dropout           = PassthroughAttributor.of(Dropout),
         MaxPool2d         = PoolingAttributor.of(MaxPool2d),
@@ -75,13 +81,28 @@ presets = {
         kwpool            = {'pool_op': lambda x: avg_pool2d(x, kernel_size=2, stride=2)},
         BatchView         = ShapeAttributor.of(BatchView),
     ),
+    'DTD': Namespace(
+        Dense             = DTDZPlus.of(Dense),
+        kwdense           = {'use_bias': False},
+        Conv2d            = DTDZPlus.of(Conv2d),
+        kwconv            = {'use_bias': False},
+        IConv2d           = DTDZB.of(Conv2d),
+        kwiconv           = {'use_bias': False, 'lo': -5., 'hi': 5.},
+        ReLU              = PassthroughAttributor.of(ReLU),
+        Dropout           = PassthroughAttributor.of(Dropout),
+        MaxPool2d         = PoolingAttributor.of(MaxPool2d),
+        AdaptiveAvgPool2d = PoolingAttributor.of(AdaptiveAvgPool2d),
+        #kwpool            = {'pool_op': lambda x: avg_pool2d(x, kernel_size=2, stride=2)},
+        kwpool            = {},
+        BatchView         = ShapeAttributor.of(BatchView),
+    ),
 }
 
-class VGG16(SequentialAttributor):
+class VGG16(FeedForwardParametric, Sequential):
     '''
         We can use SequentialAttributor since modules are added in order, such that _modules can simply be applied front to back
     '''
-    def __init__(self, in_dim, out_dim, init_weights=False, layerns=preset['LRPSeqB'], **kwargs):
+    def __init__(self, in_dim, out_dim, init_weights=False, layerns=preset['DTD'], **kwargs):
         super().__init__(**kwargs)
 
         R = layerns
@@ -95,10 +116,16 @@ class VGG16(SequentialAttributor):
                         ('pool%d'%n, R.MaxPool2d(kernel_size=2, stride=2, **R.kwpool)),
                     ])
                 else:
-                    layers.update([
-                        ('conv%d'%n, R.Conv2d(in_channels, v, kernel_size=3, padding=1, **R.kwconv)),
-                        ('relu%d'%n, R.ReLU(inplace=True))
-                    ])
+                    if n == 0:
+                        layers.update([
+                            ('conv%d'%n, R.IConv2d(in_channels, v, kernel_size=3, padding=1, **R.kwiconv)),
+                            ('relu%d'%n, R.ReLU(inplace=True))
+                        ])
+                    else:
+                        layers.update([
+                            ('conv%d'%n, R.Conv2d(in_channels, v, kernel_size=3, padding=1, **R.kwconv)),
+                            ('relu%d'%n, R.ReLU(inplace=True))
+                        ])
                     in_channels = v
             return SequentialAttributor(layers)
         self.features = make_layers(vggconfig['D'])
@@ -106,7 +133,7 @@ class VGG16(SequentialAttributor):
         self.classifier = SequentialAttributor(OrderedDict([
             ('view0', R.BatchView(-1)),
             ('dens0', R.Dense(512 * 7 * 7, 4096, **R.kwdense)),
-            ('pasu0', R.ReLU()),
+            ('relu0', R.ReLU()),
             ('drop0', R.Dropout()),
             ('dens1', R.Dense(4096, 4096, **R.kwdense)),
             ('relu1', R.ReLU()),
