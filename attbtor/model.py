@@ -4,10 +4,10 @@ from collections import OrderedDict
 from argparse import Namespace
 
 from torch.nn import init, Dropout, MaxPool2d, AdaptiveAvgPool2d, ReLU
-from torchvision.models.vgg import cfg as vggconfig
+from torchvision.models.vgg import cfgs as vggconfig
 from ntorx.attribution import LRPAlphaBeta, LRPEpsilon, PoolingAttributor, \
                               DTDZPlus, DTDZB, ShapeAttributor, SequentialAttributor, \
-                              PassthroughAttributor, GradientAttributor
+                              PassthroughAttributor, GradientAttributor, LRPFlat
 from ntorx.model import Parametric, FeedForwardParametric
 from ntorx.nn import BatchView, Sequential, Linear
 from torch.nn.functional import avg_pool2d
@@ -58,13 +58,14 @@ preset = {
         kwdense           = {'use_bias': True},
         Conv2d            = DTDZPlus.of(Conv2d),
         kwconv            = {'use_bias': True},
-        IConv2d            = DTDZPlus.of(Conv2d),
-        kwiconv            = {'use_bias': True},
+        IConv2d           = LRPFlat.of(Conv2d),
+        kwiconv           = {},
         ReLU              = PassthroughAttributor.of(ReLU),
         Dropout           = PassthroughAttributor.of(Dropout),
         MaxPool2d         = PoolingAttributor.of(MaxPool2d),
         AdaptiveAvgPool2d = PoolingAttributor.of(AdaptiveAvgPool2d),
-        kwpool            = {'pool_op': lambda x: avg_pool2d(x, kernel_size=2, stride=2)},
+        #kwpool            = {'pool_op': lambda x: avg_pool2d(x, kernel_size=2, stride=2)},
+        kwpool            = {},
         BatchView         = ShapeAttributor.of(BatchView),
     ),
     'LRPSeqB': Namespace(
@@ -72,8 +73,8 @@ preset = {
         kwdense           = {'use_bias': True},
         Conv2d            = LRPAlphaBeta.of(Conv2d),
         kwconv            = {'use_bias': True, 'alpha': 2, 'beta': 1},
-        IConv2d            = LRPAlphaBeta.of(Conv2d),
-        kwiconv            = {'use_bias': True, 'alpha': 2, 'beta': 1},
+        IConv2d           = LRPFlat.of(Conv2d),
+        kwiconv           = {},
         ReLU              = PassthroughAttributor.of(ReLU),
         Dropout           = PassthroughAttributor.of(Dropout),
         MaxPool2d         = PoolingAttributor.of(MaxPool2d),

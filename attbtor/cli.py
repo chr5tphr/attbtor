@@ -11,6 +11,8 @@ from sys import stdout
 import click
 import numpy as np
 import torch
+import h5py
+import re
 
 from PIL import Image
 from tctim import imprint
@@ -97,12 +99,20 @@ def model(ctx, load, compat, nout, cin, attributor, parallel):
 @click.option('-b', '--bsize', type=int, default=32)
 @click.option('--train/--test', default=False)
 @click.option('--datapath', default=path.join(xdg_data_home(), 'dataset'))
+@click.option('--regex')
 @click.option('--dataset', type=click.Choice(['CIFAR10', 'MNIST', 'Imagenet-12']), default='Imagenet-12')
 @click.option('--download/--no-download', default=False)
 @click.option('--shuffle/--no-shuffle', default=False)
 @click.option('--workers', type=int, default=4)
 @click.pass_context
-def data(ctx, bsize, train, datapath, dataset, download, shuffle, workers):
+def data(ctx, bsize, train, datapath, regex, dataset, download, shuffle, workers):
+    if regex is not None:
+        rvalid = re.compile(regex)
+        def is_valid_file(fpath):
+            return rvalid.fullmatch(fpath) is not None
+    else:
+        is_valid_file = None
+
     if dataset == 'CIFAR10':
         transf = Compose(([RandomCrop(32, padding=4), RandomHorizontalFlip()] if train else []) + [ToTensor(), Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))])
         dset = CIFAR10(root=datapath, train=train , transform=transf, download=download)
@@ -110,7 +120,7 @@ def data(ctx, bsize, train, datapath, dataset, download, shuffle, workers):
         dset = MNIST(root=data, train=train , transform=Compose([Pad(2), ToTensor()]), download=download)
     elif dataset == 'Imagenet-12':
         transf = Compose(([RandomResizedCrop(224), RandomHorizontalFlip()] if train else [CenterCrop(224)]) + [ToTensor(), Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
-        dset = ImageFolder(root=datapath, transform=transf)
+        dset = ImageFolder(root=datapath, transform=transf, is_valid_file=is_valid_file)
     else:
         raise RuntimeError('No such dataset!')
     loader  = DataLoader(dset, bsize, shuffle=shuffle, num_workers=workers)
@@ -128,26 +138,29 @@ def validate(ctx, output):
 
 @main.command()
 @click.option('-o', '--output', type=click.Path())
-@click.option('--layer', type=int, default=0)
+@click.option('--predicted/--label', default=False)
 @click.pass_context
-def attribution(ctx, output):
+def attribution(ctx, output, predicted):
     loader = ctx.obj.loader
     model = ctx.obj.model
     model.to(ctx.obj.device)
     model.eval()
     dlen = len(loader)
+    nout = ctx.obj.nout
 
     for i, (data, label) in enumerate(loader):
         logger.debug('Processing batch {:d}/{:d} ...'.format(i, dlen))
         data = data.to(ctx.obj.device)
         out = model.forward(data)
-        attrib = model[layer:].attribution(out)
+        amax = out.argmax(1) if predicted else label
+        fout = torch.eye(nout, device=out.device, dtype=out.dtype)[amax]
+        attrib = model.attribution(fout)
         if not path.exists(output):
             subshp = tuple(attrib.shape[1:])
             with h5py.File(output, 'w') as fd:
-                fd.create_dataset('attribution', shape=(0,) + subshp, dtype='f32', maxshape=(None,) + subshp, chunks=True)
-                fd.create_dataset('prediction',  shape=(0,), dtype='u16', maxshape=(None,), chunks=True)
-                fd.create_dataset('label',       shape=(0,), dtype='u16', maxshape=(None,), chunks=True)
+                fd.create_dataset('attribution', shape=(0,) + subshp, dtype='float32', maxshape=(None,) + subshp, chunks=True)
+                fd.create_dataset('prediction',  shape=(0,), dtype='uint16', maxshape=(None,), chunks=True)
+                fd.create_dataset('label',       shape=(0,), dtype='uint16', maxshape=(None,), chunks=True)
 
         with h5py.File(output, 'a') as fd:
             n = fd['attribution'].shape[0]
@@ -155,9 +168,9 @@ def attribution(ctx, output):
             fd['prediction'].resize(n + attrib.shape[0], axis=0)
             fd['label'].resize(n + attrib.shape[0], axis=0)
 
-            fd['attribution'][n:] = attrib.cpu().numpy()
-            fd['prediction'][n:] = out.argmax(1).cpu().numpy()
-            fd['label'][n:] = label.cpu().numpy()
+            fd['attribution'][n:] = attrib.detach().cpu().numpy()
+            fd['prediction'][n:] = out.argmax(1).detach().cpu().numpy()
+            fd['label'][n:] = label.detach().cpu().numpy()
 
 @main.command()
 @click.option('-o', '--output', type=click.File(mode='wb'), default=stdout.buffer)
