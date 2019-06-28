@@ -146,20 +146,21 @@ def attribution(ctx, output, predicted):
     model.to(ctx.obj.device)
     model.eval()
     dlen = len(loader)
-    nout = ctx.obj.nout
+    #nout = ctx.obj.nout
 
     for i, (data, label) in enumerate(loader):
         logger.debug('Processing batch {:d}/{:d} ...'.format(i, dlen))
         data = data.to(ctx.obj.device)
         out = model.forward(data)
         amax = out.argmax(1) if predicted else label
+        nout = out.shape[1]
         fout = torch.eye(nout, device=out.device, dtype=out.dtype)[amax]
         attrib = model.attribution(fout)
         if not path.exists(output):
             subshp = tuple(attrib.shape[1:])
             with h5py.File(output, 'w') as fd:
                 fd.create_dataset('attribution', shape=(0,) + subshp, dtype='float32', maxshape=(None,) + subshp, chunks=True)
-                fd.create_dataset('prediction',  shape=(0,), dtype='uint16', maxshape=(None,), chunks=True)
+                fd.create_dataset('prediction',  shape=(0, nout), dtype='float32', maxshape=(None, nout), chunks=True)
                 fd.create_dataset('label',       shape=(0,), dtype='uint16', maxshape=(None,), chunks=True)
 
         with h5py.File(output, 'a') as fd:
@@ -169,7 +170,7 @@ def attribution(ctx, output, predicted):
             fd['label'].resize(n + attrib.shape[0], axis=0)
 
             fd['attribution'][n:] = attrib.detach().cpu().numpy()
-            fd['prediction'][n:] = out.argmax(1).detach().cpu().numpy()
+            fd['prediction'][n:] = out.detach().cpu().numpy()
             fd['label'][n:] = label.detach().cpu().numpy()
 
 @main.command()
