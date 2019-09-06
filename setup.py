@@ -13,4 +13,9 @@ setup(
         'torchvision>=0.3.0',
         'Click>=7.0',
     ],
+    entry_points={
+        'console_scripts': [
+            'attbtor = attbtor.cli:main'
+        ]
+    }
 )

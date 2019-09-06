@@ -31,6 +31,7 @@ from .model import FeedFwd, VGG16, preset
 
 logger = getLogger()
 
+
 def xdg_data_home():
     return environ.get('XDG_DATA_HOME', path.join(environ['HOME'], '.local', 'share'))
 
@@ -65,17 +66,25 @@ def main(ctx, log, verbose, threads, device):
 @click.option('--nout', type=int, default=1000)
 @click.option('--cin', type=int, default=3)
 @click.option('--attributor', type=click.Choice(['gradient', 'smoothgrad', 'dtd', 'lrp_a', 'lrp_b']), default='gradient')
+@click.option('--arch', type=click.Choice(['vgg11', 'vgg13', 'vgg16', 'vgg19']), default='vgg16')
 @click.option('--parallel/--no-parallel', default=False)
 @click.pass_context
 def model(ctx, load, compat, nout, cin, attributor, parallel):
     init_weights = (load is None) or (compat is not None)
+
     Model = {
         'gradient': GradientAttributor,
         'smoothgrad': SmoothGradAttributor,
         'dtd': SequentialAttributor,
         'lrp_a': SequentialAttributor,
         'lrp_b': SequentialAttributor,
-    }[attributor].of(VGG16)
+    }[attributor].of({
+        'vgg11': VGG11,
+        'vgg13': VGG13,
+        'vgg16': VGG16,
+        'vgg19': VGG19,
+    }[model])
+
     layerns = preset[{
         'gradient': 'None',
         'smoothgrad': 'None',
@@ -83,6 +92,7 @@ def model(ctx, load, compat, nout, cin, attributor, parallel):
         'lrp_a': 'LRPSeqA',
         'lrp_b': 'LRPSeqB',
     }[attributor]]
+
     model = Model(cin, nout, init_weights=init_weights, parallel=parallel, layerns=layerns)
     if load is not None:
         if compat is None:
@@ -125,6 +135,33 @@ def data(ctx, bsize, train, datapath, regex, dataset, download, shuffle, workers
         raise RuntimeError('No such dataset!')
     loader  = DataLoader(dset, bsize, shuffle=shuffle, num_workers=workers)
     ctx.obj.loader = loader
+
+@main.command()
+@click.option('--lr', type=float, default=1e-3)
+@click.option('--decay', type=float)
+@click.pass_context
+def optimize(ctx, param, lr, decay):
+    model = ctx.obj.model
+
+    optargs = {'params': model.parameters(), 'lr': lr}
+    if decay:
+        optargs['weight_decay'] = decay
+
+    ctx.obj.optimizer = torch.optim.Adam(optargs)
+
+@main.command()
+@click.option('-c', '--checkpoint', type=click.Path())
+@click.option('-s', '--start', type=int, default=0)
+@click.option('-n', '--nepochs', type=int, default=10)
+@click.option('-f', '--sfreq', type=int, default=1)
+@click.option('--nslope', type=int, default=5)
+@click.pass_context
+def train(ctx, checkpoint, start, nepochs, sfreq, nslope):
+    loader = ctx.obj.loader
+    model = ctx.obj.model
+    optimizer = ctx.obj.optimizer
+
+    model.train_params(loader, optimizer, nepochs=nepochs, nslope=nslope, spath=checkpoint, start=start, sfreq=sfreq)
 
 @main.command()
 @click.option('-o', '--output', type=click.File(mode='w'), default=stdout)
@@ -209,4 +246,4 @@ def attrvis(ctx, output, backup, cmap, seed):
         Image.fromarray(imgify(barr)).save(backup, format='png')
 
 if __name__ == '__main__':
-    main(auto_envvar_prefix='PASU')
+    main(auto_envvar_prefix='ATTBTOR')
