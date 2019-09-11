@@ -26,7 +26,7 @@ from ntorx.image import colorize, montage, imgify
 from ntorx.nn import Linear, PaSU
 from ntorx.util import config_logger
 
-from .model import FeedFwd, VGG16, preset
+from .model import FeedFwd, preset, VGG11, VGG13, VGG16, VGG19
 
 
 logger = getLogger()
@@ -68,9 +68,10 @@ def main(ctx, log, verbose, threads, device):
 @click.option('--attributor', type=click.Choice(['gradient', 'smoothgrad', 'dtd', 'lrp_a', 'lrp_b']), default='gradient')
 @click.option('--arch', type=click.Choice(['vgg11', 'vgg13', 'vgg16', 'vgg19']), default='vgg16')
 @click.option('--parallel/--no-parallel', default=False)
+@click.option('--force-init/--no-force-init', default=False)
 @click.pass_context
-def model(ctx, load, compat, nout, cin, attributor, parallel):
-    init_weights = (load is None) or (compat is not None)
+def model(ctx, load, compat, nout, cin, attributor, arch, parallel, force_init):
+    init_weights = (load is None) or (compat is not None) or force_init
 
     Model = {
         'gradient': GradientAttributor,
@@ -83,7 +84,7 @@ def model(ctx, load, compat, nout, cin, attributor, parallel):
         'vgg13': VGG13,
         'vgg16': VGG16,
         'vgg19': VGG19,
-    }[model])
+    }[arch])
 
     layerns = preset[{
         'gradient': 'None',
@@ -140,14 +141,14 @@ def data(ctx, bsize, train, datapath, regex, dataset, download, shuffle, workers
 @click.option('--lr', type=float, default=1e-3)
 @click.option('--decay', type=float)
 @click.pass_context
-def optimize(ctx, param, lr, decay):
+def optimize(ctx, lr, decay):
     model = ctx.obj.model
 
     optargs = {'params': model.parameters(), 'lr': lr}
     if decay:
         optargs['weight_decay'] = decay
 
-    ctx.obj.optimizer = torch.optim.Adam(optargs)
+    ctx.obj.optimizer = torch.optim.Adam(**optargs)
 
 @main.command()
 @click.option('-c', '--checkpoint', type=click.Path())

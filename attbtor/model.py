@@ -2,10 +2,17 @@ import sys
 
 from collections import OrderedDict
 
+import torch
 from torchvision.models.vgg import cfgs as vggconfig
 
 from ntorx.model import FeedForwardParametric
 from ntorx.nn import Sequential
+try:
+    from ntorx.nn import Dense, Conv2d, BatchNorm2d
+except ImportError:
+    from ntorx.nn import __getattr__ as _getlin
+    for lin in ['Dense', 'Conv2d', 'BatchNorm2d']:
+        setattr(sys.modules[__name__], lin, _getlin(lin))
 
 from .layer_namespace import preset
 
@@ -35,7 +42,7 @@ class VGG(FeedForwardParametric, Sequential):
 
         R = layerns
 
-        def make_layers(cfg, layerns):
+        def make_layers(cfg):
             layers = OrderedDict()
             in_channels = in_dim
             for n, v in enumerate(cfg):
@@ -74,12 +81,12 @@ class VGG(FeedForwardParametric, Sequential):
     def _initialize_weights(self):
         for m in self.modules():
             if isinstance(m, Conv2d):
-                init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                torch.nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 if m.bias is not None:
-                    init.constant_(m.bias, 0)
+                    torch.nn.init.constant_(m.bias, 0)
             elif isinstance(m, Dense):
-                init.normal_(m.weight, 0, 0.01)
-                init.constant_(m.bias, 0)
+                torch.nn.init.normal_(m.weight, 0, 0.01)
+                torch.nn.init.constant_(m.bias, 0)
 
 class VGG11(VGG):
     def __init__(self, in_dim, out_dim, *args, **kwargs):
