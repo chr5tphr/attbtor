@@ -109,6 +109,7 @@ def model(ctx, load, compat, nout, cin, attributor, arch, parallel, force_init):
 @main.command()
 @click.option('-b', '--bsize', type=int, default=32)
 @click.option('--train/--test', default=False)
+@click.option('--force-trainset/--no-force-trainset', default=False)
 @click.option('--datapath', default=path.join(xdg_data_home(), 'dataset'))
 @click.option('--regex')
 @click.option('--dataset', type=click.Choice(['CIFAR10', 'MNIST', 'Imagenet-12']), default='Imagenet-12')
@@ -116,7 +117,7 @@ def model(ctx, load, compat, nout, cin, attributor, arch, parallel, force_init):
 @click.option('--shuffle/--no-shuffle', default=False)
 @click.option('--workers', type=int, default=4)
 @click.pass_context
-def data(ctx, bsize, train, datapath, regex, dataset, download, shuffle, workers):
+def data(ctx, bsize, train, force_trainset, datapath, regex, dataset, download, shuffle, workers):
     if regex is not None:
         rvalid = re.compile(regex)
         def is_valid_file(fpath):
@@ -126,9 +127,10 @@ def data(ctx, bsize, train, datapath, regex, dataset, download, shuffle, workers
 
     if dataset == 'CIFAR10':
         transf = Compose(([RandomCrop(32, padding=4), RandomHorizontalFlip()] if train else []) + [ToTensor(), Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))])
-        dset = CIFAR10(root=datapath, train=train , transform=transf, download=download)
+        dset = CIFAR10(root=datapath, train=train or force_trainset, transform=transf, download=download)
     elif dataset == 'MNIST':
-        dset = MNIST(root=data, train=train , transform=Compose([Pad(2), ToTensor()]), download=download)
+        transf = Compose([Pad(2), ToTensor(), Normalize(0.4734, 0.2009)])
+        dset = MNIST(root=datapath, train=train or force_trainset, transform=transf, download=download)
     elif dataset == 'Imagenet-12':
         transf = Compose(([RandomResizedCrop(224), RandomHorizontalFlip()] if train else [CenterCrop(224)]) + [ToTensor(), Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
         dset = ImageFolder(root=datapath, transform=transf, is_valid_file=is_valid_file)
